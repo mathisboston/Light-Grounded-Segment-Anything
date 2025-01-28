@@ -120,16 +120,15 @@ def save_mask_data(output_dir, mask_list, box_list, label_list, filename="mask",
     ext = ".png"
     
     # Determine the value to use for filling the mask image based on binary and invert settings.
-    bin_value = 255 if not binary or invert else 0
-
-    mask_img = torch.ones(mask_list.shape[-2:], dtype=torch.uint8) * (bin_value if not binary else 0)
+    bin_value = 0 if invert else 255
+    mask_img = torch.ones(mask_list.shape[-2:], dtype=torch.uint8) * (255-bin_value)
 
     for idx, mask in enumerate(mask_list):
         # Use list comprehension to convert the mask tensor to a NumPy array once per iteration.
         np_mask = mask.cpu().numpy()[0]
-        if invert:
-            np_mask = ~np_mask  # Invert the mask inside the loop for better memory usage.
-        mask_img[np_mask] = bin_value * ((idx + 1) / len(mask_list)) if not binary else bin_value
+        idx = idx if invert else idx + 1 
+        mask_value = 255 * (idx / len(mask_list)) if not binary else bin_value
+        mask_img[np_mask] = mask_value
 
     mask_img = mask_img.numpy().astype(np.uint8)
     cv2.imwrite(os.path.join(output_dir, filename + ext), mask_img)
