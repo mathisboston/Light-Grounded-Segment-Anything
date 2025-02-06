@@ -1,6 +1,6 @@
 addict
 blur_detector
-gradio ~= 3.50.2
+gradio ~= 4.44.1
 huggingface_hub
 matplotlib
 numpy

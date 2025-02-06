@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys, os
+sys.path.append(os.path.join(os.getcwd(), "GroundingDINO"))
+sys.path.append(os.path.join(os.getcwd(), "segment_anything"))
+
 import os
 import random
 from pathlib import Path
@@ -30,58 +34,87 @@ from rembg import remove
 
 # Monkey patching the Gallery class to allow the gallery 
 # to postprocess an existing list of images in gallery
+from typing import Union, Tuple, Optional, List
+import PIL.Image
+from gradio.data_classes import FileData, GradioModel, GradioRootModel
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
+from gradio_client.utils import is_http_url_like
+
+class GalleryImage(GradioModel):
+    image: FileData
+    caption: Optional[str] = None
+class GalleryData(GradioRootModel):
+    root: List[GalleryImage]
+GalleryImageType = Union[np.ndarray, PIL.Image.Image, Path, str]
+CaptionedGalleryImageType = Tuple[GalleryImageType, str]
+
 class Gallery(gr.Gallery):
     # Overriding the postprocess method to return the gallery
     def postprocess(
         self,
-        y: list[np.ndarray | Image.Image | str]
-        | list[tuple[np.ndarray | Image.Image | str, str]]
-        | None,
-    ) -> list[str]:
+        value: list[GalleryImageType | CaptionedGalleryImageType] | None,
+    ) -> GalleryData:
         """
         Parameters:
-            y: list of images, or list of (image, caption) tuples
+            value: Expects the function to return a `list` of images, or `list` of (image, `str` caption) tuples. Each image can be a `str` file path, a `numpy` array, or a `PIL.Image` object.
         Returns:
-            list of string file paths to images in temp directory
+            a list of images, or list of (image, caption) tuples
         """
-        if y is None:
-            return []
+        if value is None:
+            return GalleryData(root=[])
         output = []
-        for img in y:
+
+        def _save(img):
+            url = None
             caption = None
+            orig_name = None
             if isinstance(img, (tuple, list)):
                 img, caption = img
             if isinstance(img, np.ndarray):
-                file = self.img_array_to_temp_file(img, dir=self.DEFAULT_TEMP_DIR)
+                file = gr.processing_utils.save_img_array_to_cache(
+                    img, cache_dir=self.GRADIO_CACHE, format=self.format
+                )
                 file_path = str(gr.utils.abspath(file))
-                self.temp_files.add(file_path)
-            elif isinstance(img, Image.Image):
-                file = self.pil_to_temp_file(img, dir=self.DEFAULT_TEMP_DIR)
+            elif isinstance(img, PIL.Image.Image):
+                file = gr.processing_utils.save_pil_to_cache(
+                    img, cache_dir=self.GRADIO_CACHE, format=self.format
+                )
                 file_path = str(gr.utils.abspath(file))
-                self.temp_files.add(file_path)
-            elif isinstance(img, (str, Path)):
-                if gr.utils.validate_url(img):
-                    file_path = img
-                else:
-                    file_path = self.make_temp_copy_if_needed(img)
             elif isinstance(img, dict):
                 if img["is_file"]:
-                    file_path = self.make_temp_copy_if_needed(img["name"]) 
+                    file_path = str(img["name"])
                 else:
-                    file = self.img_array_to_temp_file(img["data"], dir=self.DEFAULT_TEMP_DIR)
+                    file = gr.processing_utils.save_img_array_to_cache(
+                        img["data"], cache_dir=self.GRADIO_CACHE, format=self.format
+                    )
                     file_path = str(gr.utils.abspath(file))
-                    self.temp_files.add(file_path)
+            elif isinstance(img, str):
+                file_path = img
+                if is_http_url_like(img):
+                    url = img
+                    orig_name = Path(urlparse(img).path).name
+                else:
+                    url = None
+                    orig_name = Path(img).name
+            elif isinstance(img, Path):
+                file_path = str(img)
+                orig_name = img.name
             else:
                 raise ValueError(f"Cannot process type as image: {type(img)}")
+            return GalleryImage(
+                image=FileData(path=file_path, url=url, orig_name=orig_name),
+                caption=caption,
+            )
 
-            if caption is not None:
-                output.append(
-                    [{"name": file_path, "data": None, "is_file": True}, caption]
-                )
-            else:
-                output.append({"name": file_path, "data": None, "is_file": True})
-
-        return output
+        if gr.wasm_utils.IS_WASM:
+            for img in value:
+                output.append(_save(img))
+        else:
+            with ThreadPoolExecutor() as executor:
+                for o in executor.map(_save, value):
+                    output.append(o)
+        return GalleryData(root=output)
 
 def show_anns(anns):
     if len(anns) == 0:
@@ -124,7 +157,7 @@ def load_model(model_config_path, model_checkpoint_path, device):
     args = SLConfig.fromfile(model_config_path)
     device = device
     model = build_model(args)
-    checkpoint = torch.load(model_checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(model_checkpoint_path, map_location="cpu", weights_only=True)
     load_res = model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     print(load_res)
     _ = model.eval()
@@ -232,7 +265,7 @@ def load_ckpt(dino_path, sam_path, use_sam_hq=False, sam_version="vit_h"):
 
     return dino_path, sam_path, use_sam_hq, sam_version, gr.Button(interactive=True)
 
-def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_threshold, gallery, remove_bg_mode, mask_bg, post_process_mask, scribble_mode):
+def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_threshold, gallery, remove_bg_mode, mask_bg, post_process_mask):
 
     global groundingdino_model, sam_predictor, sam_automask_generator, device
 
@@ -241,8 +274,8 @@ def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_th
 
     # load image
     if task_type == 'scribble':
-        image = input_image["image"]
-        scribble = input_image["mask"]
+        image = input_image["background"]
+        scribbles = input_image["layers"]
     else:
         image = input_image
     size = image.size # w, h
@@ -256,27 +289,30 @@ def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_th
     # run task
     if task_type == 'scribble':
         sam_predictor.set_image(image)
-        scribble = scribble.convert("RGB")
-        scribble = np.array(scribble)
-        scribble = scribble.transpose(2, 1, 0)[0]
+        # tensor of size scribbles 
+        all_point_coords = None
+        all_point_labels = None
+        for scribble in scribbles:
+            scribble = np.array(scribble)
+            scribble = scribble[:,:,-1].transpose(1,0) #last channel is the scribble
+            labeled_array, num_features = ndimage.label(scribble >= 255)
+            centers = ndimage.center_of_mass(scribble, labeled_array, range(1, num_features+1))
+            centers = np.array(centers)
 
-        # 将连通域进行标记
-        labeled_array, num_features = ndimage.label(scribble >= 255)
-
-        # 计算每个连通域的质心
-        centers = ndimage.center_of_mass(scribble, labeled_array, range(1, num_features+1))
-        centers = np.array(centers)
-
-        point_coords = torch.from_numpy(centers)
-        point_coords = sam_predictor.transform.apply_coords_torch(point_coords, image.shape[:2])
-        point_coords = point_coords.unsqueeze(0).to(device)
-        point_labels = torch.from_numpy(np.array([1] * len(centers))).unsqueeze(0).to(device)
-        if scribble_mode == 'split':
-            point_coords = point_coords.permute(1, 0, 2)
-            point_labels = point_labels.permute(1, 0)
+            point_coords = torch.from_numpy(centers)
+            point_coords = sam_predictor.transform.apply_coords_torch(point_coords, image.shape[:2])
+            point_coords = point_coords.unsqueeze(0).to(device)
+            point_labels = torch.from_numpy(np.array([1] * len(centers))).unsqueeze(0).to(device)
+            if all_point_coords is None:
+                all_point_coords = point_coords
+                all_point_labels = point_labels
+            else:
+                all_point_coords = torch.cat((all_point_coords, point_coords), dim=0)
+                all_point_labels = torch.cat((all_point_labels, point_labels), dim=0)
+        
         masks, _, _ = sam_predictor.predict_torch(
-            point_coords=point_coords if len(point_coords) > 0 else None,
-            point_labels=point_labels if len(point_coords) > 0 else None,
+            point_coords=all_point_coords if len(all_point_coords) > 0 else None,
+            point_labels=all_point_labels if len(all_point_labels) > 0 else None,
             mask_input = None,
             boxes = None,
             multimask_output = False,
@@ -403,21 +439,21 @@ def prev_img():
     
 def does_need_text_prompt(task):
     if task == 'det' or task == 'seg':
-        return gr.Textbox(visible=True), gr.Image(source='upload', type="pil", value=Image.open(paths[img_idx]), tool=None, show_label=False, label="Input Image")
+        return gr.Textbox(visible=True), gr.Image(sources='upload', type="pil", value=Image.open(paths[img_idx]), show_label=False, show_fullscreen_button=True)
     elif task == 'automask' or task == 'blur' or task == 'frontback':
-        return gr.Textbox(value="",visible=False), gr.Image(source='upload', type="pil", value=Image.open(paths[img_idx]), tool=None, show_label=False, label="Input Image")
+        return gr.Textbox(value="",visible=False), gr.Sketchpad(sources='upload', type="pil", value=Image.open(paths[img_idx]), show_label=False, show_fullscreen_button=True)
     else:
-        return gr.Textbox(value="",visible=False), gr.Image(source='upload', type="pil", value=Image.open(paths[img_idx]), tool="sketch", show_label=False, label="Input Image")
+        return gr.Textbox(value="",visible=False), gr.Sketchpad(sources='upload', type="pil", value=Image.open(paths[img_idx]), show_label=False, show_fullscreen_button=True)
 
 def save_outputs(gallery, progress=gr.Progress()):
     global output_dir 
     for img, output_save_name in progress.tqdm(gallery, desc="Saving gallery", total=len(gallery), unit="image"):
         try:
-            with Image.open(img['name']) as im: #local only
-                if img['name'].contains('_mask'):
+            with Image.open(img) as im: #local only
+                if '_mask' in output_save_name:
                     im = im.convert('L')
                     im = im.point(lambda p: p > 0 and 255)
-                im.save(os.path.join(output_dir,output_save_name))
+                im.save(os.path.join(output_dir, output_save_name))
         except OSError as ose:
             print(f"Could not create {output_save_name}: {ose}")
         except ValueError as ve:
@@ -473,14 +509,14 @@ if __name__ == "__main__":
                             sam_version = gr.Dropdown(["vit_h", "vit_l", "vit_b"], value="vit_h", label="SAM ViT version")
                             use_sam_hq = gr.Checkbox(label="Use SAM-HQ", value=False)
                 with gr.Row():
-                    load_ckpts = gr.Button(variant="primary", size="lg", value="🔨 Load DINO and SAM",  container=True)
+                    load_ckpts = gr.Button(variant="primary", size="lg", value="🔨 Load DINO and SAM")#,container=True)
         
         with gr.Row(equal_height=False):
             with gr.Column(variant="panel"):
                 gr.Label(value="Input image", show_label=False, color='grey')
                 with gr.Group():
-                    input_image = gr.Image(source='upload', type="pil", value=Image.open(paths[img_idx]), tool="sketch", show_label=False, label="Input Image")
-                    count_img = gr.Label(f"{img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]}", show_label=False, container=False, scale=0)
+                    input_image = gr.Sketchpad(sources='upload', type="pil",value=Image.open(paths[img_idx]), show_label=False, show_fullscreen_button=True)
+                    count_img = gr.Label(f"{img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]}", show_label=False, scale=0)#, container=False)
                     with gr.Row(variant="compact",equal_height=True):
                         prev_button = gr.Button(value="No more images", interactive=False)
                         next_button = gr.Button(value="Next Image →")
@@ -509,8 +545,6 @@ if __name__ == "__main__":
                             label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.05
                         )
                     with gr.Group():
-                        scribble_mode = gr.Dropdown(["merge", "split"], value="split", label="Scribble Mode")
-                    with gr.Group():
                         remove_bg_mode = gr.Dropdown(["alpha_matting", "only_mask", "None"], value="alpha_matting", label="Remove background mode")
                         mask_bg = gr.Checkbox(label="Mask background instead of remove", value=False)
                         post_process_mask = gr.Checkbox(label="Post process mask", value=False)
@@ -518,17 +552,17 @@ if __name__ == "__main__":
             with gr.Column(variant="panel"):
                 gr.Label(value="Outputs", show_label=False, color='grey')
                 save_button = gr.Button(value="💾 Save", variant="stop")
-                gallery = Gallery(show_download_button=True, show_label=False, preview=True, object_fit="scale-down")
+                gallery = Gallery(show_download_button=True, show_label=False, preview=True, object_fit="scale-down", label="Gallery")
 
         load_ckpts.click(fn=load_ckpt, inputs=[dino_path, sam_path, use_sam_hq, sam_version],outputs=[dino_path, sam_path, use_sam_hq, sam_version, run_button])
         prev_button.click(fn=prev_img, outputs=[input_image, prev_button, next_button, count_img])
         next_button.click(fn=next_img, outputs=[input_image, prev_button, next_button, count_img])
-        run_button.click(fn=run_grounded_sam, inputs=[input_image, text_prompt, task_type, box_threshold, text_threshold, gallery, remove_bg_mode, mask_bg, post_process_mask, scribble_mode], outputs=gallery)
+        run_button.click(fn=run_grounded_sam, inputs=[input_image, text_prompt, task_type, box_threshold, text_threshold, gallery, remove_bg_mode, mask_bg, post_process_mask], outputs=gallery)
         save_button.click(fn=save_outputs, inputs=[gallery], outputs=[save_button])
         
         task_type.change(fn=does_need_text_prompt, inputs=[task_type], outputs=[text_prompt,input_image])
         gallery.change(fn=lambda:gr.Button("💾 Save",variant="stop"), outputs=[save_button])
-    block.queue(concurrency_count=100)
+
     serv_ip = '0.0.0.0'
 
     block.launch(
