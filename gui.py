@@ -277,7 +277,7 @@ def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_th
         image = input_image["background"]
         scribbles = input_image["layers"]
     else:
-        image = input_image
+        image = input_image["background"]
     size = image.size # w, h
 
 
