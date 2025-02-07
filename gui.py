@@ -421,7 +421,7 @@ def next_img():
     else: #last image ; button should be disabled then here's not accessible
         next_btn =  gr.Button(value="No more images, IMP", interactive=False)
 
-    return Image.open(paths[img_idx]), gr.Button(value="← Previous Image", interactive=True), next_btn, f"{img_idx+1}/{len(paths)} : {paths[img_idx].split('/')[-1]}"
+    return Image.open(paths[img_idx]), gr.Button(value="← Previous Image", interactive=True), next_btn, f"""# <p align='center'>  {img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]} </p>"""
 
 def prev_img():
     global img_idx
@@ -435,7 +435,7 @@ def prev_img():
     else: #first image; button should be disabled then here's not accessible
         prev_btn = gr.Button(value="No more images, IMP", interactive=False)
 
-    return Image.open(paths[img_idx]), prev_btn, gr.Button(value="Next Image →",interactive=True), f"{img_idx+1}/{len(paths)} : {paths[img_idx].split('/')[-1]}"
+    return Image.open(paths[img_idx]), prev_btn, gr.Button(value="Next Image →",interactive=True), f"""# <p align='center'>  {img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]} </p>"""
     
 def does_need_text_prompt(task):
     if task == 'det' or task == 'seg':
@@ -469,8 +469,6 @@ if __name__ == "__main__":
     parser.add_argument('--no-gradio-queue', action="store_true", help='disable gradio queue')
     args = parser.parse_args()
 
-    print(args)
-
     # make dir
     os.makedirs(output_dir, exist_ok=True)
     
@@ -493,30 +491,36 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error loading SAM model: {e}")
     
-    block = gr.Blocks()
+    demo = gr.Blocks(fill_width=True)
     if not args.no_gradio_queue:
-        block = block.queue()
+        demo = demo.queue()
 
-    with block:
+    with demo:
+        # SETUP
         with gr.Row():
-            with gr.Column(variant="panel"):
-                gr.Label(value="Model parameters", show_label=False, color='grey')
-                with gr.Row(equal_height=True):
+            with gr.Column(variant="compact"):
+                gr.Markdown("""# <p align='center'> Model parameters </p>""")
+                with gr.Row(scale=1, equal_height=True):
                     dino_path = gr.Text(label="Path to GroundingDINO checkpoint : ", value="checkpoints/groundingdino_swint_ogc.pth", placeholder="path to Grounding DINO checkpoint")
                     with gr.Row(equal_height=True):
-                        sam_path = gr.Text(label="Path to SAM checkpoint :", value="checkpoints/sam_vit_h_4b8939.pth", placeholder="path to SAM checkpoint")
+                        sam_path = gr.Text(label="Path to SAM checkpoint :", value="checkpoints/sam_vit_h_4b8939.pth", placeholder="path/to/SAM/checkpoint")
                         with gr.Column():
                             sam_version = gr.Dropdown(["vit_h", "vit_l", "vit_b"], value="vit_h", label="SAM ViT version")
                             use_sam_hq = gr.Checkbox(label="Use SAM-HQ", value=False)
-                with gr.Row():
-                    load_ckpts = gr.Button(variant="primary", size="lg", value="🔨 Load DINO and SAM")#,container=True)
+                with gr.Row(scale=1):
+                    load_ckpts = gr.Button(variant="primary", size="lg", value="🔨 Load DINO and SAM")
         
         with gr.Row(equal_height=False):
-            with gr.Column(variant="panel"):
-                gr.Label(value="Input image", show_label=False, color='grey')
+            # INPUT IMAGE
+            with gr.Column(variant="compact"):
+                gr.Markdown("""# <p align='center'> Input image </p>""")
                 with gr.Group():
-                    input_image = gr.Sketchpad(sources='upload', type="pil",value=Image.open(paths[img_idx]), show_label=False, show_fullscreen_button=True)
-                    count_img = gr.Label(f"{img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]}", show_label=False, scale=0)#, container=False)
+                    input_image = gr.Sketchpad(
+                        sources=None, type="pil", 
+                        value=Image.open(paths[img_idx]), 
+                        show_label=False, 
+                        show_fullscreen_button=True)
+                    count_img = gr.Markdown(f"""# <p align='center'>  {img_idx+1}/{len(paths)}: {paths[img_idx].split('/')[-1]} </p>""")
                     with gr.Row(variant="compact",equal_height=True):
                         prev_button = gr.Button(value="No more images", interactive=False)
                         next_button = gr.Button(value="Next Image →")
@@ -535,7 +539,7 @@ if __name__ == "__main__":
                     run_button = gr.Button(
                         value="🔎 Run", 
                         interactive=(groundingdino_model is not None and sam_predictor is not None and sam_automask_generator is not None), 
-                        variant="stop")
+                        variant="primary")
                 with gr.Accordion("Advanced options", open=False):
                     with gr.Group():
                         box_threshold = gr.Slider(
@@ -549,10 +553,12 @@ if __name__ == "__main__":
                         mask_bg = gr.Checkbox(label="Mask background instead of remove", value=False)
                         post_process_mask = gr.Checkbox(label="Post process mask", value=False)
             
-            with gr.Column(variant="panel"):
-                gr.Label(value="Outputs", show_label=False, color='grey')
-                save_button = gr.Button(value="💾 Save", variant="stop")
-                gallery = Gallery(show_download_button=True, show_label=False, preview=True, object_fit="scale-down", label="Gallery")
+            # OUTPUTS
+        with gr.Row(equal_height=False):
+            with gr.Column(variant="compact"):
+                gr.Markdown("""# <p align='center'> Outputs </p>""")
+                save_button = gr.Button(value="💾 Save all galery elements", variant="stop")
+                gallery = Gallery(show_download_button=True, show_label=False, preview=True, object_fit="scale-down", interactive=False)
 
         load_ckpts.click(fn=load_ckpt, inputs=[dino_path, sam_path, use_sam_hq, sam_version],outputs=[dino_path, sam_path, use_sam_hq, sam_version, run_button])
         prev_button.click(fn=prev_img, outputs=[input_image, prev_button, next_button, count_img])
@@ -561,11 +567,11 @@ if __name__ == "__main__":
         save_button.click(fn=save_outputs, inputs=[gallery], outputs=[save_button])
         
         task_type.change(fn=does_need_text_prompt, inputs=[task_type], outputs=[text_prompt,input_image])
-        gallery.change(fn=lambda:gr.Button("💾 Save",variant="stop"), outputs=[save_button])
+        gallery.change(fn=lambda:gr.Button("💾 Save all galery elements ",variant="stop"), outputs=[save_button])
 
     serv_ip = '0.0.0.0'
 
-    block.launch(
+    demo.launch(
         server_name=serv_ip, 
         server_port=args.port, 
         debug=args.debug, 
