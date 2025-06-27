@@ -1,2 +1,6 @@
-folder=/raid/mb273924/renault/roads/gilles/ns
-python grounded_sam_demo.py --device "cuda" --input_image /raid/mb273924/renault/roads/gilles/ns/images_8 --output_dir /raid/mb273924/renault/roads/gilles/ns/masks_8 --text_prompt "sky." --box_threshold 0.3 --binary_mask --overview --invert
+folder="/data/mb273924/_DATASETS/sacamain/images_8"
+python scripts/grounded_sam_demo.py \
+ --input_image $folder --output_dir $folder/../masks_8 \
+ --text_prompt "bag." \
+ --sam_version "vit_b"  --sam_checkpoint "checkpoints/sam_hq_vit_b.pth" \
+ --box_threshold 0.3 --overview --use_sam_hq

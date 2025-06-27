@@ -330,7 +330,7 @@ def run_grounded_sam(input_image, text_prompt, task_type, box_threshold, text_th
         elif remove_bg_mode == 'only_mask':
             front = remove(image_pil, alpha_matting=False, post_process_mask=post_process_mask, bgcolor=bgcolor)
         else:
-            front = remove(image_pil, alpha_matting=False, post_process_mask=post_process_mask, bgcolor=bgcolor)
+            raise ValueError("remove_bg_mode should be 'alpha_matting' or 'only_mask'")
     else: # dino, dino+sam
         transformed_image = transform_image(image_pil)
 
@@ -527,12 +527,12 @@ if __name__ == "__main__":
 
                 with gr.Row():
                     task_type = gr.Dropdown([
-                        ("Mask w/ interactive SAM","scribble"), 
-                        ("Mask w/ automatic SAM","automask"), 
-                        ("Box w/ DINO","det"), 
-                        ("Box and mask w/ DINO + SAM", "seg"),
+                        ("Draw to segment","scribble"), 
+                        ("Segment all","automask"), 
+                        ("Text to detect","det"), 
+                        ("Text to segment", "seg"),
                         ("Blur detector", "blur"),
-                        ("Front/Back detection", "frontback")
+                        ("Background detector", "frontback")
                     ], value="scribble", label="Task type") #'automatic' disabled need blip and transformers
                     text_prompt = gr.Textbox(label="Text Prompt", visible=False)
                 with gr.Row():
@@ -549,7 +549,7 @@ if __name__ == "__main__":
                             label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.05
                         )
                     with gr.Group():
-                        remove_bg_mode = gr.Dropdown(["alpha_matting", "only_mask", "None"], value="alpha_matting", label="Remove background mode")
+                        remove_bg_mode = gr.Dropdown(["alpha_matting", "only_mask"], value="alpha_matting", label="Remove background mode")
                         mask_bg = gr.Checkbox(label="Mask background instead of remove", value=False)
                         post_process_mask = gr.Checkbox(label="Post process mask", value=False)
             

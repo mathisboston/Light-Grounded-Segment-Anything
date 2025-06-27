@@ -8,15 +8,21 @@ import torch
 from PIL import Image
 import tqdm
 
+sys.path.append(os.path.join(os.getcwd()))
 sys.path.append(os.path.join(os.getcwd(), "GroundingDINO"))
 sys.path.append(os.path.join(os.getcwd(), "segment_anything"))
 
-
 # Grounding DINO
-import GroundingDINO.groundingdino.datasets.transforms as T
+from GroundingDINO.groundingdino.datasets import transforms as T
 from GroundingDINO.groundingdino.models import build_model
 from GroundingDINO.groundingdino.util.slconfig import SLConfig
 from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
+
+
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+
 
 # segment anything
 from segment_anything import (
@@ -94,17 +100,20 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold, w
     return boxes_filt, pred_phrases
 
 ## Draw and save functions
-def show_mask(mask, image, random_color=False):
+def show_mask(mask, image, random_color=False, postprocess=False):
     if random_color:
         color = np.concatenate([np.random.random(3)], axis=0)
     else:
         color = np.array([30/255, 144/255, 255/255])
-    mask = mask.astype(np.uint8)
-    mask = np.transpose(mask, (1, 2, 0))
+    mask = mask.astype(np.uint8)[0]
 
-    mask_index = mask[:, :, 0] > 0
+    if postprocess:
+        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        mask = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) 
+
     # simultate transparency
-    image[mask_index] = image[mask_index] * 0.5 + color * 255 * 0.5
+    image[mask > 0] = image[mask > 0] * 0.5 + color * 255 * 0.5
     
     return image 
 
@@ -116,7 +125,7 @@ def show_box(box, image, label):
     cv2.putText(image, label, (x0+5, y0-5), cv2.FONT_HERSHEY_SIMPLEX, 2, color, 2)
     return image
 
-def save_mask_data(output_dir, mask_list, box_list, label_list, filename="mask", binary=False, invert=False):
+def save_mask_data(output_dir, mask_list, box_list, label_list, filename="mask", binary=False, invert=False, postprocess=False):
     ext = ".png"
     
     # Determine the value to use for filling the mask image based on binary and invert settings.
@@ -126,6 +135,11 @@ def save_mask_data(output_dir, mask_list, box_list, label_list, filename="mask",
     for idx, mask in enumerate(mask_list):
         # Use list comprehension to convert the mask tensor to a NumPy array once per iteration.
         np_mask = mask.cpu().numpy()[0]
+        if postprocess:
+            np_mask = cv2.morphologyEx(np_mask.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            np_mask = cv2.morphologyEx(np_mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            np_mask = cv2.dilate(np_mask.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) 
+            np_mask = np_mask > 0
         idx = idx if invert else idx + 1 
         mask_value = 255 * (idx / len(mask_list)) if not binary else bin_value
         mask_img[np_mask] = mask_value
@@ -170,7 +184,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
     )
-    parser.add_argument("--input_image", type=str, required=True, help="path to image file")
+    parser.add_argument("--input_image", '-i', type=str, required=True, help="path to image file")
     parser.add_argument("--output_dir", "-o", type=str, default="outputs", required=True, help="output directory")
 
     parser.add_argument("--text_prompt", type=str, required=True, help="text prompt")
@@ -178,11 +192,13 @@ if __name__ == "__main__":
 
     parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold")
 
-    parser.add_argument("--binary_mask", action="store_true", help="save masks as binary image")
+    parser.add_argument("--postprocess", action="store_true", help="Shrink and dilate masks")
+
+    parser.add_argument("--binary", action="store_true", help="save masks as binary image")
     parser.add_argument("--overview", action="store_true", help="save boxes and masks over images")
     parser.add_argument("--invert", action="store_true", help="invert mask")
 
-    parser.add_argument("--device", type=str, default="gpu")
+    parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
     # cfg
@@ -211,7 +227,9 @@ if __name__ == "__main__":
         predictor = SamPredictor(sam_hq_model_registry[sam_version](checkpoint=sam_checkpoint).to(device))
     else:
         predictor = SamPredictor(sam_model_registry[sam_version](checkpoint=sam_checkpoint).to(device))
-
+        # checkpoint = "checkpoints/sam2.1_hiera_large.pt"
+        # model_cfg = "checkpoints/sam2.1_hiera_l.yaml"
+        # predictor = SAM2ImagePredictor(build_sam2(model_cfg, checkpoint))
     paths = [image_path] if os.path.isfile(image_path) else [os.path.join(image_path, f) for f in os.listdir(image_path) if os.path.isfile(os.path.join(image_path, f)) and f.lower().endswith(tuple(EXT_IMG_ALLOW))]
     print(f"Found {len(paths)} images")
 
@@ -256,6 +274,7 @@ if __name__ == "__main__":
         )
         predictor.reset_image()
 
+
         # SAVE MASKs
         if args.overview:
             # draw boxes and masks over images
@@ -263,10 +282,10 @@ if __name__ == "__main__":
             for label, box in zip(pred_phrases, boxes_filt):
                 image = show_box(box.numpy(), image, label)
             for mask in masks:
-                image = show_mask(mask.cpu().numpy(), image, random_color=True)
+                image = show_mask(mask.cpu().numpy(), image, random_color=True, postprocess=args.postprocess)
             cv2.imwrite(os.path.join(output_dir,"comp",f"{filename_ext[0]}_all_masks.jpg"), image)
 
-        save_mask_data(output_dir, masks, boxes_filt, pred_phrases, filename_ext[0], binary=args.binary_mask, invert=args.invert)
+        save_mask_data(output_dir, masks, boxes_filt, pred_phrases, filename_ext[0], binary=args.binary, invert=args.invert, postprocess=args.postprocess)
 
         pbar.update(1)
     pbar.close()
